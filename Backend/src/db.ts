@@ -7,6 +7,8 @@ export interface StoredMessage {
     username: string;
     message: string;
     timestamp: number;
+    editedAt?: number;
+    deleted?: boolean;
 }
 
 interface Membership {
@@ -59,6 +61,29 @@ export function getMessages(roomId: string): StoredMessage[] {
     return db.messages.filter((m) => m.roomId === roomId);
 }
 
+export function editMessage(
+    roomId: string,
+    messageId: string,
+    username: string,
+    newText: string
+): StoredMessage | null {
+    const msg = db.messages.find((m) => m.id === messageId && m.roomId === roomId);
+    if (!msg || msg.username !== username || msg.deleted) return null;
+    msg.message = newText;
+    msg.editedAt = Date.now();
+    persist();
+    return msg;
+}
+
+export function deleteMessage(roomId: string, messageId: string, username: string): boolean {
+    const msg = db.messages.find((m) => m.id === messageId && m.roomId === roomId);
+    if (!msg || msg.username !== username) return false;
+    msg.deleted = true;
+    msg.message = "";
+    persist();
+    return true;
+}
+
 export function addMembership(username: string, roomId: string): void {
     const exists = db.memberships.some(
         (m) => m.username === username && m.roomId === roomId
@@ -67,6 +92,13 @@ export function addMembership(username: string, roomId: string): void {
         db.memberships.push({ username, roomId, joinedAt: Date.now() });
         persist();
     }
+}
+
+export function removeMembership(username: string, roomId: string): void {
+    db.memberships = db.memberships.filter(
+        (m) => !(m.username === username && m.roomId === roomId)
+    );
+    persist();
 }
 
 export function getRoomIdsForUser(username: string): string[] {

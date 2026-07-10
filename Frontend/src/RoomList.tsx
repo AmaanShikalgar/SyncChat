@@ -1,9 +1,10 @@
 import { useState } from 'react';
-import type { RoomData } from './types';
+import type { RoomData, ConnectionStatus } from './types';
 
 function RoomList({
   username,
   rooms,
+  connectionStatus,
   onCreateRoom,
   onJoinRoom,
   onSelectRoom,
@@ -11,6 +12,7 @@ function RoomList({
 }: {
   username: string;
   rooms: RoomData[];
+  connectionStatus: ConnectionStatus;
   onCreateRoom: () => void;
   onJoinRoom: (roomId: string) => void;
   onSelectRoom: (roomId: string) => void;
@@ -25,7 +27,7 @@ function RoomList({
   }
 
   return (
-    <div className='h-screen flex flex-col bg-white'>
+    <div className='h-full flex flex-col bg-white'>
       <div className='bg-[#075E54] text-white px-4 py-3 flex items-center justify-between shrink-0'>
         <div>
           <p className='text-xs text-green-100'>Signed in as</p>
@@ -35,6 +37,12 @@ function RoomList({
           Log out
         </button>
       </div>
+
+      {connectionStatus !== "connected" && (
+        <div className={`text-xs text-center py-1.5 shrink-0 ${connectionStatus === "connecting" ? "bg-amber-100 text-amber-800" : "bg-red-100 text-red-800"}`}>
+          {connectionStatus === "connecting" ? "Connecting…" : "Disconnected — retrying…"}
+        </div>
+      )}
 
       <div className='p-3 flex flex-col gap-2 border-b shrink-0'>
         <button
@@ -66,19 +74,27 @@ function RoomList({
         )}
         {rooms.map(room => {
           const last = room.messages[room.messages.length - 1];
+          const isOnline = room.onlineUsers.some(u => u !== username);
           return (
             <div
               key={room.id}
               className='flex items-center gap-3 px-4 py-3 border-b cursor-pointer hover:bg-gray-50'
               onClick={() => onSelectRoom(room.id)}
             >
-              <div className='w-10 h-10 rounded-full bg-[#128C7E] text-white flex items-center justify-center text-sm font-medium shrink-0'>
-                {room.id.slice(0, 2)}
+              <div className='relative shrink-0'>
+                <div className='w-10 h-10 rounded-full bg-[#128C7E] text-white flex items-center justify-center text-sm font-medium'>
+                  {room.id.slice(0, 2)}
+                </div>
+                {isOnline && (
+                  <div className='absolute bottom-0 right-0 w-2.5 h-2.5 rounded-full bg-green-500 border-2 border-white' />
+                )}
               </div>
               <div className='flex-1 min-w-0'>
                 <p className='font-medium text-black text-sm'>{room.id}</p>
                 <p className='text-xs text-gray-500 truncate'>
-                  {last ? `${last.self ? "You" : last.sender}: ${last.text}` : "No messages yet"}
+                  {last
+                    ? (last.deleted ? "Message deleted" : `${last.self ? "You" : last.sender}: ${last.text}`)
+                    : "No messages yet"}
                 </p>
               </div>
               {room.unread > 0 && (
