@@ -9,6 +9,10 @@ const USERNAME_KEY = "ws-chat-username";
 const RECONNECT_DELAY_MS = 2000;
 const TYPING_TIMEOUT_MS = 3000;
 
+// Set VITE_WS_URL in the deployed environment (e.g. wss://your-backend.onrender.com).
+// Falls back to the local dev backend when not set.
+const WS_URL = import.meta.env.VITE_WS_URL ?? "ws://localhost:8080";
+
 function makeRoomCode() {
   return Math.random().toString(36).slice(2, 8).toUpperCase();
 }
@@ -64,7 +68,7 @@ function App() {
 
     function connect() {
       setConnectionStatus(prev => (prev === "connected" ? prev : "connecting"));
-      const ws = new WebSocket("ws://localhost:8080");
+      const ws = new WebSocket(WS_URL);
       wsRef.current = ws;
 
       ws.onopen = () => {
@@ -330,37 +334,49 @@ function App() {
   const activeRoom = activeRoomId ? rooms[activeRoomId] : undefined;
 
   return (
-    <div className='h-screen flex bg-white overflow-hidden'>
-      <div className={`w-full md:w-80 md:border-r md:border-gray-200 flex-shrink-0 ${activeRoomId ? 'hidden md:block' : 'block'}`}>
-        <RoomList
-          username={username}
-          rooms={Object.values(rooms)}
-          connectionStatus={connectionStatus}
-          onCreateRoom={handleCreateRoom}
-          onJoinRoom={handleJoinRoom}
-          onSelectRoom={handleSelectRoom}
-          onLogout={handleLogout}
-        />
-      </div>
-
-      <div className={`flex-1 min-w-0 ${activeRoomId ? 'block' : 'hidden md:flex'}`}>
-        {activeRoom ? (
-          <ChatWindow
-            room={activeRoom}
-            currentUsername={username}
+    <div className='h-screen md:bg-[#DAD8D8] md:flex md:items-center md:justify-center md:p-6'>
+      <div className='h-full w-full md:max-w-6xl md:h-[92vh] flex bg-white overflow-hidden md:rounded-xl md:shadow-2xl'>
+        <div className={`w-full md:w-[340px] md:border-r md:border-gray-200 flex-shrink-0 ${activeRoomId ? 'hidden md:block' : 'block'}`}>
+          <RoomList
+            username={username}
+            rooms={Object.values(rooms)}
             connectionStatus={connectionStatus}
-            onBack={() => setActiveRoomId(null)}
-            onSend={handleSend}
-            onLeave={() => handleLeaveRoom(activeRoom.id)}
-            onTyping={(isTyping) => handleTyping(activeRoom.id, isTyping)}
-            onEditMessage={(messageId, newText) => handleEditMessage(activeRoom.id, messageId, newText)}
-            onDeleteMessage={(messageId) => handleDeleteMessage(activeRoom.id, messageId)}
+            onCreateRoom={handleCreateRoom}
+            onJoinRoom={handleJoinRoom}
+            onSelectRoom={handleSelectRoom}
+            onLogout={handleLogout}
           />
-        ) : (
-          <div className='hidden md:flex flex-1 items-center justify-center text-gray-400 text-sm'>
-            Select a chat to start messaging
-          </div>
-        )}
+        </div>
+
+        <div className={`flex-1 min-w-0 ${activeRoomId ? 'block' : 'hidden md:flex'}`}>
+          {activeRoom ? (
+            <ChatWindow
+              room={activeRoom}
+              currentUsername={username}
+              connectionStatus={connectionStatus}
+              onBack={() => setActiveRoomId(null)}
+              onSend={handleSend}
+              onLeave={() => handleLeaveRoom(activeRoom.id)}
+              onTyping={(isTyping) => handleTyping(activeRoom.id, isTyping)}
+              onEditMessage={(messageId, newText) => handleEditMessage(activeRoom.id, messageId, newText)}
+              onDeleteMessage={(messageId) => handleDeleteMessage(activeRoom.id, messageId)}
+            />
+          ) : (
+            <div className='hidden md:flex flex-1 flex-col items-center justify-center gap-4 bg-[#F7F7F7] text-center px-8'>
+              <div className='w-20 h-20 rounded-full bg-[#075E54]/10 flex items-center justify-center'>
+                <svg width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="#075E54" strokeWidth="1.6">
+                  <path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z" strokeLinecap="round" strokeLinejoin="round"/>
+                </svg>
+              </div>
+              <div>
+                <p className='text-gray-700 font-medium'>No chat selected</p>
+                <p className='text-sm text-gray-400 mt-1 max-w-xs'>
+                  Pick a room from the list, or create a new one to start messaging
+                </p>
+              </div>
+            </div>
+          )}
+        </div>
       </div>
     </div>
   );

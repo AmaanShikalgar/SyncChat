@@ -53,7 +53,7 @@ function RoomList({
         </button>
         <div className='flex gap-2'>
           <input
-            className='flex-1 border rounded p-2 text-black uppercase'
+            className='flex-1 border rounded p-2 text-black'
             type="text"
             placeholder="Enter room code"
             value={joinCode}
