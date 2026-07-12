@@ -37,6 +37,7 @@ function ChatWindow({
   const [editText, setEditText] = useState("");
   const [replyingTo, setReplyingTo] = useState<ReplyTo | null>(null);
   const [codeCopied, setCodeCopied] = useState(false);
+  const [activeActionsId, setActiveActionsId] = useState<string | null>(null);
   const bottomRef = useRef<HTMLDivElement | null>(null);
   const messageRefs = useRef<Record<string, HTMLDivElement | null>>({});
   const typingActiveRef = useRef(false);
@@ -48,6 +49,7 @@ function ChatWindow({
 
   useEffect(() => {
     setReplyingTo(null);
+    setActiveActionsId(null);
     return () => {
       if (typingActiveRef.current) onTyping(false);
       if (typingStopTimerRef.current) window.clearTimeout(typingStopTimerRef.current);
@@ -168,7 +170,11 @@ function ChatWindow({
           <div
             key={message.id}
             ref={(el) => { messageRefs.current[message.id] = el; }}
-            className={`group max-w-[75%] px-3 py-2 text-sm rounded-lg shadow-sm break-words ${
+            onClick={() => {
+              if (message.deleted || editingId === message.id) return;
+              setActiveActionsId(prev => (prev === message.id ? null : message.id));
+            }}
+            className={`group max-w-[75%] px-3 py-2 text-sm rounded-lg shadow-sm break-words cursor-pointer ${
               message.self
                 ? 'self-end bg-[#DCF8C6] text-black rounded-br-none'
                 : 'self-start bg-white text-black rounded-bl-none'
@@ -181,7 +187,7 @@ function ChatWindow({
             {message.replyTo && !message.deleted && (
               <div
                 className='border-l-2 border-[#075E54]/50 bg-black/5 rounded px-2 py-1 mb-1 cursor-pointer'
-                onClick={() => scrollToMessage(message.replyTo!.id)}
+                onClick={(e) => { e.stopPropagation(); scrollToMessage(message.replyTo!.id); }}
               >
                 <p className='text-[11px] font-medium text-[#075E54]'>{message.replyTo.sender}</p>
                 <p className='text-[11px] text-gray-600 truncate'>{truncate(message.replyTo.text, 60)}</p>
@@ -191,7 +197,7 @@ function ChatWindow({
             {message.deleted ? (
               <p className='italic text-gray-500 text-sm'>This message was deleted</p>
             ) : editingId === message.id ? (
-              <div className='flex flex-col gap-1'>
+              <div className='flex flex-col gap-1' onClick={(e) => e.stopPropagation()}>
                 <input
                   className='border rounded px-2 py-1 text-black text-sm'
                   value={editText}
@@ -213,12 +219,15 @@ function ChatWindow({
                 {formatTime(message.timestamp)}{message.editedAt ? " (edited)" : ""}
               </span>
               {!message.deleted && editingId !== message.id && (
-                <span className='hidden group-hover:flex gap-2 text-[10px]'>
-                  <button className='text-gray-600 underline' onClick={() => startReply(message)}>reply</button>
+                <span
+                  className={`gap-2 text-[10px] ${activeActionsId === message.id ? 'flex' : 'hidden md:group-hover:flex'}`}
+                  onClick={(e) => e.stopPropagation()}
+                >
+                  <button className='text-gray-600 underline' onClick={() => { startReply(message); setActiveActionsId(null); }}>reply</button>
                   {message.self && (
                     <>
-                      <button className='text-gray-600 underline' onClick={() => startEdit(message.id, message.text)}>edit</button>
-                      <button className='text-red-600 underline' onClick={() => onDeleteMessage(message.id)}>delete</button>
+                      <button className='text-gray-600 underline' onClick={() => { startEdit(message.id, message.text); setActiveActionsId(null); }}>edit</button>
+                      <button className='text-red-600 underline' onClick={() => { onDeleteMessage(message.id); setActiveActionsId(null); }}>delete</button>
                     </>
                   )}
                 </span>
