@@ -1,4 +1,5 @@
 import { Pool } from 'pg';
+import bcrypt from 'bcryptjs';
 
 const connectionString = process.env.DATABASE_URL;
 if (!connectionString) {
@@ -19,6 +20,14 @@ const pool = new Pool({
 });
 
 export async function initDb(): Promise<void> {
+    await pool.query(`
+        CREATE TABLE IF NOT EXISTS users (
+            id SERIAL PRIMARY KEY,
+            username TEXT UNIQUE NOT NULL,
+            password_hash TEXT NOT NULL,
+            created_at BIGINT NOT NULL
+        );
+    `);
     await pool.query(`
         CREATE TABLE IF NOT EXISTS messages (
             id TEXT PRIMARY KEY,
@@ -132,4 +141,40 @@ export async function getRoomIdsForUser(username: string): Promise<string[]> {
         [username]
     );
     return result.rows.map((r) => r.room_id);
+}
+
+// --- Auth ---
+
+export interface User {
+    id: number;
+    username: string;
+}
+
+export class UsernameTakenError extends Error {}
+
+export async function createUser(username: string, password: string): Promise<User> {
+    const passwordHash = await bcrypt.hash(password, 10);
+    try {
+        const result = await pool.query(
+            `INSERT INTO users (username, password_hash, created_at)
+             VALUES ($1, $2, $3) RETURNING id, username`,
+            [username, passwordHash, Date.now()]
+        );
+        return result.rows[0];
+    } catch (err: any) {
+        if (err.code === '23505') throw new UsernameTakenError(`Username "${username}" is already taken`);
+        throw err;
+    }
+}
+
+export async function verifyUser(username: string, password: string): Promise<User | null> {
+    const result = await pool.query(
+        `SELECT id, username, password_hash FROM users WHERE username = $1`,
+        [username]
+    );
+    if (result.rowCount === 0) return null;
+    const row = result.rows[0];
+    const ok = await bcrypt.compare(password, row.password_hash);
+    if (!ok) return null;
+    return { id: row.id, username: row.username };
 }

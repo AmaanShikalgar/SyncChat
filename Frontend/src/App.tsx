@@ -1,16 +1,21 @@
 import { useEffect, useRef, useState } from 'react';
 import './App.css'
-import Login from './Login';
+import AuthPage from './AuthPage';
 import RoomList from './RoomList';
 import ChatWindow from './ChatWindow';
 import type { ChatMessage, RoomData, ConnectionStatus } from './types';
 
 const USERNAME_KEY = "ws-chat-username";
+const TOKEN_KEY = "ws-chat-token";
 const RECONNECT_DELAY_MS = 2000;
 const TYPING_TIMEOUT_MS = 3000;
+const UNAUTHORIZED_CLOSE_CODE = 4001;
 
-// Set VITE_WS_URL in the deployed environment (e.g. wss://your-backend.onrender.com).
-// Falls back to the local dev backend when not set.
+// Set these in the deployed environment:
+//   VITE_API_URL = https://your-backend.onrender.com
+//   VITE_WS_URL  = wss://your-backend.onrender.com
+// Both fall back to the local dev backend when unset.
+const API_URL = import.meta.env.VITE_API_URL ?? "http://localhost:8080";
 const WS_URL = import.meta.env.VITE_WS_URL ?? "ws://localhost:8080";
 
 function makeRoomCode() {
@@ -24,6 +29,9 @@ function emptyRoom(id: string): RoomData {
 function App() {
   const [username, setUsername] = useState<string | null>(
     () => localStorage.getItem(USERNAME_KEY)
+  );
+  const [token, setToken] = useState<string | null>(
+    () => localStorage.getItem(TOKEN_KEY)
   );
   const [rooms, setRooms] = useState<Record<string, RoomData>>({});
   const [activeRoomId, setActiveRoomId] = useState<string | null>(null);
@@ -44,10 +52,7 @@ function App() {
   }, [username]);
 
   function joinRoom(roomId: string) {
-    wsRef.current?.send(JSON.stringify({
-      type: "join",
-      payload: { roomId, username: usernameRef.current },
-    }));
+    wsRef.current?.send(JSON.stringify({ type: "join", payload: { roomId } }));
     setRooms(prev => (prev[roomId] ? prev : { ...prev, [roomId]: emptyRoom(roomId) }));
   }
 
@@ -58,8 +63,18 @@ function App() {
     new Notification(`${sender} (${roomId})`, { body: text });
   }
 
+  function forceLogout() {
+    shouldReconnectRef.current = false;
+    localStorage.removeItem(USERNAME_KEY);
+    localStorage.removeItem(TOKEN_KEY);
+    setUsername(null);
+    setToken(null);
+    setRooms({});
+    setActiveRoomId(null);
+  }
+
   useEffect(() => {
-    if (!username) return;
+    if (!username || !token) return;
     shouldReconnectRef.current = true;
 
     if (typeof Notification !== "undefined" && Notification.permission === "default") {
@@ -68,16 +83,23 @@ function App() {
 
     function connect() {
       setConnectionStatus(prev => (prev === "connected" ? prev : "connecting"));
-      const ws = new WebSocket(WS_URL);
+      const ws = new WebSocket(`${WS_URL}?token=${encodeURIComponent(token as string)}`);
       wsRef.current = ws;
 
       ws.onopen = () => {
         setConnectionStatus("connected");
-        ws.send(JSON.stringify({ type: "get-rooms", payload: { username: usernameRef.current } }));
+        ws.send(JSON.stringify({ type: "get-rooms" }));
       };
 
-      ws.onclose = () => {
+      ws.onclose = (event) => {
         setConnectionStatus("disconnected");
+
+        if (event.code === UNAUTHORIZED_CLOSE_CODE) {
+          // Token was invalid/expired — don't loop reconnecting, send them back to sign in.
+          forceLogout();
+          return;
+        }
+
         if (shouldReconnectRef.current) {
           setTimeout(connect, RECONNECT_DELAY_MS);
         }
@@ -217,20 +239,18 @@ function App() {
       wsRef.current?.close();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [username]);
+  }, [username, token]);
 
-  function handleLogin(name: string) {
+  function handleAuthenticated(name: string, authToken: string) {
     localStorage.setItem(USERNAME_KEY, name);
+    localStorage.setItem(TOKEN_KEY, authToken);
     setUsername(name);
+    setToken(authToken);
   }
 
   function handleLogout() {
-    shouldReconnectRef.current = false;
-    localStorage.removeItem(USERNAME_KEY);
+    forceLogout();
     wsRef.current?.close();
-    setUsername(null);
-    setRooms({});
-    setActiveRoomId(null);
   }
 
   function handleCreateRoom() {
@@ -250,10 +270,7 @@ function App() {
   }
 
   function handleLeaveRoom(roomId: string) {
-    wsRef.current?.send(JSON.stringify({
-      type: "leave",
-      payload: { roomId, username: usernameRef.current },
-    }));
+    wsRef.current?.send(JSON.stringify({ type: "leave", payload: { roomId } }));
     setRooms(prev => {
       const next = { ...prev };
       delete next[roomId];
@@ -287,7 +304,7 @@ function App() {
   function handleTyping(roomId: string, isTyping: boolean) {
     wsRef.current?.send(JSON.stringify({
       type: "typing",
-      payload: { roomId, username: usernameRef.current, isTyping },
+      payload: { roomId, isTyping },
     }));
   }
 
@@ -327,8 +344,8 @@ function App() {
     });
   }
 
-  if (!username) {
-    return <Login onLogin={handleLogin} />;
+  if (!username || !token) {
+    return <AuthPage apiUrl={API_URL} onAuthenticated={handleAuthenticated} />;
   }
 
   const activeRoom = activeRoomId ? rooms[activeRoomId] : undefined;

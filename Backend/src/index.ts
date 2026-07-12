@@ -1,3 +1,8 @@
+import 'dotenv/config';
+import http from 'http';
+import express from 'express';
+import cors from 'cors';
+import jwt from 'jsonwebtoken';
 import { WebSocket, WebSocketServer } from 'ws';
 import {
     initDb,
@@ -8,11 +13,90 @@ import {
     getRoomIdsForUser,
     editMessage,
     deleteMessage,
+    createUser,
+    verifyUser,
+    UsernameTakenError,
 } from './db';
 
-// Render (and most hosts) assign the port dynamically via PORT.
-// Falls back to 8080 for local development.
 const PORT = process.env.PORT ? parseInt(process.env.PORT, 10) : 8080;
+const JWT_SECRET = process.env.JWT_SECRET || 'dev-secret-change-me-in-production';
+
+if (!process.env.JWT_SECRET) {
+    console.warn('WARNING: JWT_SECRET is not set — using an insecure default. Set it in production.');
+}
+
+function signToken(username: string): string {
+    return jwt.sign({ username }, JWT_SECRET, { expiresIn: '7d' });
+}
+
+function verifyToken(token: string): { username: string } | null {
+    try {
+        return jwt.verify(token, JWT_SECRET) as { username: string };
+    } catch {
+        return null;
+    }
+}
+
+// --- HTTP API (signup / signin) ---
+
+const app = express();
+app.use(cors());
+app.use(express.json());
+
+app.get('/health', (_req, res) => {
+    res.json({ ok: true });
+});
+
+app.post('/api/signup', async (req, res) => {
+    const { username, password } = req.body ?? {};
+
+    if (typeof username !== 'string' || typeof password !== 'string') {
+        return res.status(400).json({ error: 'username and password are required' });
+    }
+    if (username.trim().length < 3) {
+        return res.status(400).json({ error: 'username must be at least 3 characters' });
+    }
+    if (password.length < 6) {
+        return res.status(400).json({ error: 'password must be at least 6 characters' });
+    }
+
+    try {
+        const user = await createUser(username.trim(), password);
+        const token = signToken(user.username);
+        res.json({ token, username: user.username });
+    } catch (err) {
+        if (err instanceof UsernameTakenError) {
+            return res.status(409).json({ error: err.message });
+        }
+        console.error('Signup error:', err);
+        res.status(500).json({ error: 'signup failed' });
+    }
+});
+
+app.post('/api/signin', async (req, res) => {
+    const { username, password } = req.body ?? {};
+
+    if (typeof username !== 'string' || typeof password !== 'string') {
+        return res.status(400).json({ error: 'username and password are required' });
+    }
+
+    try {
+        const user = await verifyUser(username.trim(), password);
+        if (!user) {
+            return res.status(401).json({ error: 'invalid username or password' });
+        }
+        const token = signToken(user.username);
+        res.json({ token, username: user.username });
+    } catch (err) {
+        console.error('Signin error:', err);
+        res.status(500).json({ error: 'signin failed' });
+    }
+});
+
+// --- WebSocket chat, sharing the same HTTP server/port ---
+
+const server = http.createServer(app);
+const wss = new WebSocketServer({ server });
 
 interface Member {
     socket: WebSocket;
@@ -20,10 +104,8 @@ interface Member {
     username: string;
 }
 
-// Live, in-memory list of who is connected to which room right now — used
-// for real-time broadcast and presence. Message history and room
-// membership live in Postgres (db.ts) and survive server restarts.
 let members: Member[] = [];
+const socketUsernames = new Map<WebSocket, string>();
 
 function broadcastToRoom(roomId: string, data: string, excludeSocket: WebSocket) {
     for (let i = 0; i < members.length; i++) {
@@ -56,12 +138,25 @@ async function main() {
     await initDb();
     console.log("Database schema ready");
 
-    const wss = new WebSocketServer({ port: PORT });
-    console.log(`WebSocket server listening on port ${PORT}`);
+    wss.on("connection", function (socket, req) {
+        // Authenticate the socket using the JWT passed as a query param,
+        // e.g. wss://host?token=xxxx. The username is taken from the
+        // verified token from here on — never trusted from message payloads.
+        const url = new URL(req.url ?? '', 'http://localhost');
+        const token = url.searchParams.get('token');
+        const decoded = token ? verifyToken(token) : null;
 
-    wss.on("connection", function (socket) {
+        if (!decoded) {
+            socket.close(4001, 'Unauthorized');
+            return;
+        }
+
+        socketUsernames.set(socket, decoded.username);
 
         socket.on("message", async (raw) => {
+            const username = socketUsernames.get(socket);
+            if (!username) return; // shouldn't happen, but be defensive
+
             let parsedMessage: any;
             try {
                 parsedMessage = JSON.parse(raw.toString());
@@ -71,7 +166,6 @@ async function main() {
 
             try {
                 if (parsedMessage.type === "get-rooms") {
-                    const { username } = parsedMessage.payload;
                     const roomIds = await getRoomIdsForUser(username);
                     socket.send(JSON.stringify({
                         type: "rooms",
@@ -81,7 +175,7 @@ async function main() {
                 }
 
                 if (parsedMessage.type === "join") {
-                    const { roomId, username } = parsedMessage.payload;
+                    const { roomId } = parsedMessage.payload;
 
                     await addMembership(username, roomId);
 
@@ -103,7 +197,7 @@ async function main() {
                 }
 
                 if (parsedMessage.type === "leave") {
-                    const { roomId, username } = parsedMessage.payload;
+                    const { roomId } = parsedMessage.payload;
                     await removeMembership(username, roomId);
                     members = members.filter(
                         (m) => !(m.socket === socket && m.room === roomId)
@@ -186,8 +280,13 @@ async function main() {
                 new Set(members.filter((m) => m.socket === socket).map((m) => m.room))
             );
             members = members.filter((m) => m.socket !== socket);
+            socketUsernames.delete(socket);
             affectedRooms.forEach(broadcastPresence);
         });
+    });
+
+    server.listen(PORT, () => {
+        console.log(`HTTP + WebSocket server listening on port ${PORT}`);
     });
 }
 
