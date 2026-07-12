@@ -37,8 +37,6 @@ function verifyToken(token: string): { username: string } | null {
     }
 }
 
-// --- HTTP API (signup / signin) ---
-
 const app = express();
 app.use(cors());
 app.use(express.json());
@@ -93,8 +91,6 @@ app.post('/api/signin', async (req, res) => {
     }
 });
 
-// --- WebSocket chat, sharing the same HTTP server/port ---
-
 const server = http.createServer(app);
 const wss = new WebSocketServer({ server });
 
@@ -139,9 +135,7 @@ async function main() {
     console.log("Database schema ready");
 
     wss.on("connection", function (socket, req) {
-        // Authenticate the socket using the JWT passed as a query param,
-        // e.g. wss://host?token=xxxx. The username is taken from the
-        // verified token from here on — never trusted from message payloads.
+        
         const url = new URL(req.url ?? '', 'http://localhost');
         const token = url.searchParams.get('token');
         const decoded = token ? verifyToken(token) : null;

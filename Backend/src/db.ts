@@ -9,9 +9,6 @@ if (!connectionString) {
     );
 }
 
-// Neon (and most managed Postgres hosts) require SSL. Local Postgres during
-// development typically doesn't, so we only turn it on when the connection
-// string signals it's needed.
 const needsSsl = connectionString.includes('sslmode=require') || connectionString.includes('neon.tech');
 
 const pool = new Pool({

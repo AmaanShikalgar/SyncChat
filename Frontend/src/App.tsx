@@ -11,10 +11,6 @@ const RECONNECT_DELAY_MS = 2000;
 const TYPING_TIMEOUT_MS = 3000;
 const UNAUTHORIZED_CLOSE_CODE = 4001;
 
-// Set these in the deployed environment:
-//   VITE_API_URL = https://your-backend.onrender.com
-//   VITE_WS_URL  = wss://your-backend.onrender.com
-// Both fall back to the local dev backend when unset.
 const API_URL = import.meta.env.VITE_API_URL ?? "http://localhost:8080";
 const WS_URL = import.meta.env.VITE_WS_URL ?? "ws://localhost:8080";
 
@@ -238,7 +234,6 @@ function App() {
       shouldReconnectRef.current = false;
       wsRef.current?.close();
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [username, token]);
 
   function handleAuthenticated(name: string, authToken: string) {
