@@ -126,8 +126,14 @@ function ChatWindow({
   return (
     <div className='h-full w-full flex flex-col bg-[#E5DDD5]'>
       <div className='bg-[#075E54] text-white px-4 py-3 flex items-center gap-3 shrink-0'>
-        <button onClick={onBack} className='md:hidden text-white text-lg leading-none' aria-label="Back to chat list">
-          &larr;
+        <button
+          onClick={onBack}
+          className='md:hidden -ml-2 w-11 h-11 flex items-center justify-center shrink-0 rounded-full active:bg-white/15'
+          aria-label="Back to chat list"
+        >
+          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+            <path d="M15 18l-6-6 6-6" />
+          </svg>
         </button>
         <div className='w-9 h-9 rounded-full bg-[#128C7E] flex items-center justify-center text-sm font-medium shrink-0'>
           {room.name.slice(0, 2).toUpperCase()}

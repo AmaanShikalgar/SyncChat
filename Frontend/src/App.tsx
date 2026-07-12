@@ -53,6 +53,29 @@ function App() {
     usernameRef.current = username;
   }, [username]);
 
+  // Register the open-room view in browser history so a phone's back
+  // gesture/button closes the room instead of navigating away from the app.
+  useEffect(() => {
+    function handlePopState() {
+      setActiveRoomId(null);
+    }
+    window.addEventListener('popstate', handlePopState);
+    return () => window.removeEventListener('popstate', handlePopState);
+  }, []);
+
+  function openRoom(roomId: string) {
+    window.history.pushState({ syncchatRoom: roomId }, '');
+    setActiveRoomId(roomId);
+  }
+
+  function closeActiveRoom() {
+    if (window.history.state?.syncchatRoom) {
+      window.history.back();
+    } else {
+      setActiveRoomId(null);
+    }
+  }
+
   function joinRoom(roomId: string, name?: string) {
     wsRef.current?.send(JSON.stringify({ type: "join", payload: { roomId } }));
     setRooms(prev => (prev[roomId] ? prev : { ...prev, [roomId]: emptyRoom(roomId, name) }));
@@ -273,16 +296,16 @@ function App() {
     const code = makeRoomCode();
     wsRef.current?.send(JSON.stringify({ type: "create-room", payload: { roomId: code, name } }));
     setRooms(prev => ({ ...prev, [code]: emptyRoom(code, name) }));
-    setActiveRoomId(code);
+    openRoom(code);
   }
 
   function handleJoinRoom(roomId: string) {
     joinRoom(roomId);
-    setActiveRoomId(roomId);
+    openRoom(roomId);
   }
 
   function handleSelectRoom(roomId: string) {
-    setActiveRoomId(roomId);
+    openRoom(roomId);
     setRooms(prev => (prev[roomId] ? { ...prev, [roomId]: { ...prev[roomId], unread: 0 } } : prev));
   }
 
@@ -401,7 +424,7 @@ function App() {
               room={activeRoom}
               currentUsername={username}
               connectionStatus={connectionStatus}
-              onBack={() => setActiveRoomId(null)}
+              onBack={closeActiveRoom}
               onSend={handleSend}
               onLeave={() => handleLeaveRoom(activeRoom.id)}
               onTyping={(isTyping) => handleTyping(activeRoom.id, isTyping)}
