@@ -3,7 +3,8 @@ import './App.css'
 import AuthPage from './AuthPage';
 import RoomList from './RoomList';
 import ChatWindow from './ChatWindow';
-import type { ChatMessage, RoomData, ConnectionStatus } from './types';
+import type { ChatMessage, RoomData, ConnectionStatus, ReplyTo } from './types';
+import { SITE_NAME } from './siteConfig';
 
 const USERNAME_KEY = "ws-chat-username";
 const TOKEN_KEY = "ws-chat-token";
@@ -11,6 +12,10 @@ const RECONNECT_DELAY_MS = 2000;
 const TYPING_TIMEOUT_MS = 3000;
 const UNAUTHORIZED_CLOSE_CODE = 4001;
 
+// Set these in the deployed environment:
+//   VITE_API_URL = https://your-backend.onrender.com
+//   VITE_WS_URL  = wss://your-backend.onrender.com
+// Both fall back to the local dev backend when unset.
 const API_URL = import.meta.env.VITE_API_URL ?? "http://localhost:8080";
 const WS_URL = import.meta.env.VITE_WS_URL ?? "ws://localhost:8080";
 
@@ -18,8 +23,8 @@ function makeRoomCode() {
   return Math.random().toString(36).slice(2, 8).toUpperCase();
 }
 
-function emptyRoom(id: string): RoomData {
-  return { id, messages: [], unread: 0, onlineUsers: [], typingUsers: [] };
+function emptyRoom(id: string, name?: string): RoomData {
+  return { id, name: name ?? id, messages: [], unread: 0, onlineUsers: [], typingUsers: [] };
 }
 
 function App() {
@@ -32,6 +37,7 @@ function App() {
   const [rooms, setRooms] = useState<Record<string, RoomData>>({});
   const [activeRoomId, setActiveRoomId] = useState<string | null>(null);
   const [connectionStatus, setConnectionStatus] = useState<ConnectionStatus>("connecting");
+  const [initialLoadDone, setInitialLoadDone] = useState(false);
 
   const wsRef = useRef<WebSocket | null>(null);
   const usernameRef = useRef<string | null>(username);
@@ -47,9 +53,9 @@ function App() {
     usernameRef.current = username;
   }, [username]);
 
-  function joinRoom(roomId: string) {
+  function joinRoom(roomId: string, name?: string) {
     wsRef.current?.send(JSON.stringify({ type: "join", payload: { roomId } }));
-    setRooms(prev => (prev[roomId] ? prev : { ...prev, [roomId]: emptyRoom(roomId) }));
+    setRooms(prev => (prev[roomId] ? prev : { ...prev, [roomId]: emptyRoom(roomId, name) }));
   }
 
   function notifyIfNeeded(roomId: string, sender: string, text: string) {
@@ -72,6 +78,7 @@ function App() {
   useEffect(() => {
     if (!username || !token) return;
     shouldReconnectRef.current = true;
+    setInitialLoadDone(false);
 
     if (typeof Notification !== "undefined" && Notification.permission === "default") {
       Notification.requestPermission();
@@ -91,7 +98,6 @@ function App() {
         setConnectionStatus("disconnected");
 
         if (event.code === UNAUTHORIZED_CLOSE_CODE) {
-          // Token was invalid/expired — don't loop reconnecting, send them back to sign in.
           forceLogout();
           return;
         }
@@ -109,15 +115,28 @@ function App() {
         const data = JSON.parse(event.data);
 
         if (data.type === "rooms") {
-          const { roomIds } = data.payload as { roomIds: string[] };
-          roomIds.forEach((roomId: string) => joinRoom(roomId));
+          const { rooms: roomSummaries } = data.payload as { rooms: { roomId: string; name: string }[] };
+          roomSummaries.forEach(({ roomId, name }) => joinRoom(roomId, name));
+          setInitialLoadDone(true);
+          return;
+        }
+
+        if (data.type === "room-info") {
+          const { roomId, name } = data.payload as { roomId: string; name: string };
+          setRooms(prev => {
+            const existing = prev[roomId] ?? emptyRoom(roomId, name);
+            return { ...prev, [roomId]: { ...existing, name } };
+          });
           return;
         }
 
         if (data.type === "history") {
           const { roomId, messages } = data.payload as {
             roomId: string;
-            messages: { id: string; username: string; message: string; timestamp: number; editedAt?: number; deleted?: boolean }[];
+            messages: {
+              id: string; username: string; message: string; timestamp: number;
+              editedAt?: number; deleted?: boolean; replyTo?: ReplyTo;
+            }[];
           };
           setRooms(prev => {
             const existing = prev[roomId] ?? emptyRoom(roomId);
@@ -129,6 +148,7 @@ function App() {
               timestamp: m.timestamp,
               editedAt: m.editedAt,
               deleted: m.deleted,
+              replyTo: m.replyTo,
             }));
             return { ...prev, [roomId]: { ...existing, messages: loaded } };
           });
@@ -173,9 +193,9 @@ function App() {
         }
 
         if (data.type === "chat") {
-          const { roomId, message, username: sender, timestamp, id } = data.payload;
+          const { roomId, message, username: sender, timestamp, id, replyTo } = data.payload;
 
-          const newMsg: ChatMessage = { id, text: message, sender, self: false, timestamp };
+          const newMsg: ChatMessage = { id, text: message, sender, self: false, timestamp, replyTo };
 
           setRooms(prev => {
             const existing = prev[roomId] ?? emptyRoom(roomId);
@@ -234,6 +254,7 @@ function App() {
       shouldReconnectRef.current = false;
       wsRef.current?.close();
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [username, token]);
 
   function handleAuthenticated(name: string, authToken: string) {
@@ -248,9 +269,10 @@ function App() {
     wsRef.current?.close();
   }
 
-  function handleCreateRoom() {
+  function handleCreateRoom(name: string) {
     const code = makeRoomCode();
-    joinRoom(code);
+    wsRef.current?.send(JSON.stringify({ type: "create-room", payload: { roomId: code, name } }));
+    setRooms(prev => ({ ...prev, [code]: emptyRoom(code, name) }));
     setActiveRoomId(code);
   }
 
@@ -274,12 +296,12 @@ function App() {
     if (activeRoomId === roomId) setActiveRoomId(null);
   }
 
-  function handleSend(text: string) {
+  function handleSend(text: string, replyTo?: ReplyTo) {
     if (!activeRoomId) return;
 
     wsRef.current?.send(JSON.stringify({
       type: "chat",
-      payload: { roomId: activeRoomId, message: text },
+      payload: { roomId: activeRoomId, message: text, replyTo },
     }));
 
     const newMsg: ChatMessage = {
@@ -288,6 +310,7 @@ function App() {
       sender: username ?? "you",
       self: true,
       timestamp: Date.now(),
+      replyTo,
     };
 
     setRooms(prev => {
@@ -341,6 +364,18 @@ function App() {
 
   if (!username || !token) {
     return <AuthPage apiUrl={API_URL} onAuthenticated={handleAuthenticated} />;
+  }
+
+  if (!initialLoadDone && connectionStatus !== "disconnected") {
+    return (
+      <div
+        className='h-screen flex flex-col items-center justify-center gap-3'
+        style={{ background: 'linear-gradient(135deg, #054d43 0%, #075E54 45%, #128C7E 100%)' }}
+      >
+        <div className='w-10 h-10 border-[3px] border-white/30 border-t-white rounded-full animate-spin' />
+        <p className='text-white/80 text-sm'>Loading {SITE_NAME}…</p>
+      </div>
+    );
   }
 
   const activeRoom = activeRoomId ? rooms[activeRoomId] : undefined;

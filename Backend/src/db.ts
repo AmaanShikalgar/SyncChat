@@ -9,6 +9,9 @@ if (!connectionString) {
     );
 }
 
+// Neon (and most managed Postgres hosts) require SSL. Local Postgres during
+// development typically doesn't, so we only turn it on when the connection
+// string signals it's needed.
 const needsSsl = connectionString.includes('sslmode=require') || connectionString.includes('neon.tech');
 
 const pool = new Pool({
@@ -26,6 +29,14 @@ export async function initDb(): Promise<void> {
         );
     `);
     await pool.query(`
+        CREATE TABLE IF NOT EXISTS rooms (
+            room_id TEXT PRIMARY KEY,
+            name TEXT NOT NULL,
+            created_by TEXT NOT NULL,
+            created_at BIGINT NOT NULL
+        );
+    `);
+    await pool.query(`
         CREATE TABLE IF NOT EXISTS messages (
             id TEXT PRIMARY KEY,
             room_id TEXT NOT NULL,
@@ -36,6 +47,11 @@ export async function initDb(): Promise<void> {
             deleted BOOLEAN NOT NULL DEFAULT FALSE
         );
     `);
+    // ADD COLUMN IF NOT EXISTS so this is safe to run against a database that
+    // already has the older messages table (e.g. an existing deployment).
+    await pool.query(`ALTER TABLE messages ADD COLUMN IF NOT EXISTS reply_to_id TEXT;`);
+    await pool.query(`ALTER TABLE messages ADD COLUMN IF NOT EXISTS reply_to_sender TEXT;`);
+    await pool.query(`ALTER TABLE messages ADD COLUMN IF NOT EXISTS reply_to_text TEXT;`);
     await pool.query(`
         CREATE INDEX IF NOT EXISTS idx_messages_room_id ON messages(room_id);
     `);
@@ -49,6 +65,12 @@ export async function initDb(): Promise<void> {
     `);
 }
 
+export interface ReplyTo {
+    id: string;
+    sender: string;
+    text: string;
+}
+
 export interface StoredMessage {
     id: string;
     roomId: string;
@@ -57,6 +79,7 @@ export interface StoredMessage {
     timestamp: number;
     editedAt?: number;
     deleted?: boolean;
+    replyTo?: ReplyTo;
 }
 
 function rowToMessage(row: any): StoredMessage {
@@ -68,16 +91,27 @@ function rowToMessage(row: any): StoredMessage {
         timestamp: Number(row.timestamp),
         ...(row.edited_at != null ? { editedAt: Number(row.edited_at) } : {}),
         deleted: row.deleted,
+        ...(row.reply_to_id != null
+            ? { replyTo: { id: row.reply_to_id, sender: row.reply_to_sender, text: row.reply_to_text } }
+            : {}),
     };
 }
 
-export async function addMessage(roomId: string, username: string, message: string): Promise<StoredMessage> {
+export async function addMessage(
+    roomId: string,
+    username: string,
+    message: string,
+    replyTo?: ReplyTo
+): Promise<StoredMessage> {
     const id = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
     const timestamp = Date.now();
     const result = await pool.query(
-        `INSERT INTO messages (id, room_id, username, message, timestamp)
-         VALUES ($1, $2, $3, $4, $5) RETURNING *`,
-        [id, roomId, username, message, timestamp]
+        `INSERT INTO messages (id, room_id, username, message, timestamp, reply_to_id, reply_to_sender, reply_to_text)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING *`,
+        [
+            id, roomId, username, message, timestamp,
+            replyTo?.id ?? null, replyTo?.sender ?? null, replyTo?.text ?? null,
+        ]
     );
     return rowToMessage(result.rows[0]);
 }
@@ -132,12 +166,42 @@ export async function removeMembership(username: string, roomId: string): Promis
     );
 }
 
-export async function getRoomIdsForUser(username: string): Promise<string[]> {
+export interface RoomSummary {
+    roomId: string;
+    name: string;
+}
+
+export async function getRoomsForUser(username: string): Promise<RoomSummary[]> {
     const result = await pool.query(
-        `SELECT room_id FROM memberships WHERE username = $1`,
+        `SELECT m.room_id, COALESCE(r.name, m.room_id) AS name
+         FROM memberships m
+         LEFT JOIN rooms r ON r.room_id = m.room_id
+         WHERE m.username = $1`,
         [username]
     );
-    return result.rows.map((r) => r.room_id);
+    return result.rows.map((row) => ({ roomId: row.room_id, name: row.name }));
+}
+
+export async function createRoom(roomId: string, name: string, createdBy: string): Promise<RoomSummary> {
+    const result = await pool.query(
+        `INSERT INTO rooms (room_id, name, created_by, created_at)
+         VALUES ($1, $2, $3, $4)
+         ON CONFLICT (room_id) DO NOTHING
+         RETURNING room_id, name`,
+        [roomId, name, createdBy, Date.now()]
+    );
+    if (result.rowCount && result.rowCount > 0) {
+        return { roomId: result.rows[0].room_id, name: result.rows[0].name };
+    }
+    // Room already existed (e.g. a rare code collision) — just return its real name.
+    const existing = await getRoomName(roomId);
+    return { roomId, name: existing ?? roomId };
+}
+
+export async function getRoomName(roomId: string): Promise<string | null> {
+    const result = await pool.query(`SELECT name FROM rooms WHERE room_id = $1`, [roomId]);
+    if (result.rowCount === 0) return null;
+    return result.rows[0].name;
 }
 
 // --- Auth ---

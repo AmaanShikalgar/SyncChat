@@ -10,7 +10,9 @@ import {
     getMessages,
     addMembership,
     removeMembership,
-    getRoomIdsForUser,
+    getRoomsForUser,
+    getRoomName,
+    createRoom,
     editMessage,
     deleteMessage,
     createUser,
@@ -36,6 +38,8 @@ function verifyToken(token: string): { username: string } | null {
         return null;
     }
 }
+
+// --- HTTP API (signup / signin) ---
 
 const app = express();
 app.use(cors());
@@ -91,6 +95,8 @@ app.post('/api/signin', async (req, res) => {
     }
 });
 
+// --- WebSocket chat, sharing the same HTTP server/port ---
+
 const server = http.createServer(app);
 const wss = new WebSocketServer({ server });
 
@@ -135,7 +141,9 @@ async function main() {
     console.log("Database schema ready");
 
     wss.on("connection", function (socket, req) {
-        
+        // Authenticate the socket using the JWT passed as a query param,
+        // e.g. wss://host?token=xxxx. The username is taken from the
+        // verified token from here on — never trusted from message payloads.
         const url = new URL(req.url ?? '', 'http://localhost');
         const token = url.searchParams.get('token');
         const decoded = token ? verifyToken(token) : null;
@@ -160,11 +168,38 @@ async function main() {
 
             try {
                 if (parsedMessage.type === "get-rooms") {
-                    const roomIds = await getRoomIdsForUser(username);
+                    const rooms = await getRoomsForUser(username);
                     socket.send(JSON.stringify({
                         type: "rooms",
-                        payload: { roomIds },
+                        payload: { rooms },
                     }));
+                    return;
+                }
+
+                if (parsedMessage.type === "create-room") {
+                    const { roomId, name } = parsedMessage.payload;
+                    const cleanName = typeof name === 'string' && name.trim() ? name.trim().slice(0, 60) : roomId;
+
+                    const room = await createRoom(roomId, cleanName, username);
+                    await addMembership(username, roomId);
+
+                    const alreadyLive = members.some(
+                        (m) => m.socket === socket && m.room === roomId
+                    );
+                    if (!alreadyLive) {
+                        members.push({ socket, room: roomId, username });
+                    }
+
+                    socket.send(JSON.stringify({
+                        type: "room-info",
+                        payload: { roomId: room.roomId, name: room.name },
+                    }));
+                    socket.send(JSON.stringify({
+                        type: "history",
+                        payload: { roomId, messages: [] },
+                    }));
+
+                    broadcastPresence(roomId);
                     return;
                 }
 
@@ -180,7 +215,15 @@ async function main() {
                         members.push({ socket, room: roomId, username });
                     }
 
-                    const history = await getMessages(roomId);
+                    const [name, history] = await Promise.all([
+                        getRoomName(roomId),
+                        getMessages(roomId),
+                    ]);
+
+                    socket.send(JSON.stringify({
+                        type: "room-info",
+                        payload: { roomId, name: name ?? roomId },
+                    }));
                     socket.send(JSON.stringify({
                         type: "history",
                         payload: { roomId, messages: history },
@@ -213,12 +256,16 @@ async function main() {
                 }
 
                 if (parsedMessage.type === "chat") {
-                    const { roomId, message } = parsedMessage.payload;
+                    const { roomId, message, replyTo } = parsedMessage.payload;
 
                     const sender = findMember(socket, roomId);
                     if (!sender) return; // must join a room before chatting in it
 
-                    const stored = await addMessage(roomId, sender.username, message);
+                    const cleanReplyTo = replyTo && typeof replyTo.id === 'string' && typeof replyTo.sender === 'string' && typeof replyTo.text === 'string'
+                        ? { id: replyTo.id, sender: replyTo.sender, text: replyTo.text }
+                        : undefined;
+
+                    const stored = await addMessage(roomId, sender.username, message, cleanReplyTo);
 
                     const outgoing = JSON.stringify({
                         type: "chat",
@@ -228,6 +275,7 @@ async function main() {
                             message: stored.message,
                             username: stored.username,
                             timestamp: stored.timestamp,
+                            replyTo: stored.replyTo,
                         },
                     });
 
